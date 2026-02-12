@@ -1,7 +1,4 @@
 {
-    "buildCommand": "npm run build",
-    "outputDirectory": ".next",
-    "ignoreCommand": "git log -1 --pretty=%B | grep -q \"\\[skip ci\\]\"",
     "headers": [
         {
             "source": "/images/(.*)",
