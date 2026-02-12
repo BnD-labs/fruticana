@@ -1,6 +1,5 @@
 {
     "buildCommand": "npm run build",
-    "outputDirectory": "out",
     "ignoreCommand": "git log -1 --pretty=%B | grep -q \"\\[skip ci\\]\"",
     "headers": [
         {
