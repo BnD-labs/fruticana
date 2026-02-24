@@ -14,6 +14,10 @@ export default function ProductBottleScroll({ product }: ProductBottleScrollProp
     const [imagesLoaded, setImagesLoaded] = useState(false);
     const [loadingProgress, setLoadingProgress] = useState(0);
     const imagesRef = useRef<(HTMLImageElement | null)[]>([]);
+    const lastDrawnFrameRef = useRef<number>(-1);
+
+    // Detect mobile once on mount
+    const isMobileRef = useRef(typeof window !== "undefined" && window.innerWidth <= 768);
 
     const { scrollYProgress } = useScroll({
         target: containerRef,
@@ -29,11 +33,15 @@ export default function ProductBottleScroll({ product }: ProductBottleScrollProp
     // Reset imagesRef when product changes
     useEffect(() => {
         imagesRef.current = new Array(product.frameCount).fill(null);
+        lastDrawnFrameRef.current = -1;
     }, [product]);
 
     useEffect(() => {
         let isMounted = true;
         const totalFrames = product.frameCount;
+        const isMobile = isMobileRef.current;
+        // On mobile, load every 2nd frame to halve memory and network usage
+        const frameStep = isMobile ? 2 : 1;
         setImagesLoaded(false);
         setLoadingProgress(0);
 
@@ -82,17 +90,18 @@ export default function ProductBottleScroll({ product }: ProductBottleScrollProp
             }
 
             // Phase 2: Background frames (everything else)
-            // Batch them to avoid connection saturation
-            const allIndices = Array.from({ length: totalFrames }, (_, i) => i);
+            // On mobile, skip every other frame to reduce load
+            const allIndices = Array.from({ length: totalFrames }, (_, i) => i)
+                .filter(i => i % frameStep === 0);
             const remainingIndices = allIndices.filter(i => !criticalIndices.includes(i));
 
-            const batchSize = 10;
+            const batchSize = isMobile ? 6 : 10;
             for (let i = 0; i < remainingIndices.length; i += batchSize) {
                 if (!isMounted) break;
                 const batch = remainingIndices.slice(i, i + batchSize);
                 await Promise.all(batch.map(index => loadImage(index)));
                 // Give some breathing room between batches
-                await new Promise(r => setTimeout(r, 50));
+                await new Promise(r => setTimeout(r, isMobile ? 100 : 50));
             }
         };
 
@@ -130,7 +139,9 @@ export default function ProductBottleScroll({ product }: ProductBottleScrollProp
         if (!canvas) return;
 
         const rect = canvas.getBoundingClientRect();
-        const dpr = window.devicePixelRatio || 1;
+        // Cap DPR at 2 on mobile — 3× is 56% more pixels for negligible visual gain
+        const rawDpr = window.devicePixelRatio || 1;
+        const dpr = isMobileRef.current ? Math.min(rawDpr, 2) : rawDpr;
 
         if (
             canvasSizeRef.current.width !== rect.width ||
@@ -142,6 +153,8 @@ export default function ProductBottleScroll({ product }: ProductBottleScrollProp
             canvas.style.width = rect.width + "px";
             canvas.style.height = rect.height + "px";
             canvasSizeRef.current = { width: rect.width, height: rect.height, dpr };
+            // Force redraw after resize
+            lastDrawnFrameRef.current = -1;
         }
     };
 
@@ -152,13 +165,20 @@ export default function ProductBottleScroll({ product }: ProductBottleScrollProp
         const canvas = canvasRef.current;
         if (!canvas) return;
 
-        const ctx = canvas.getContext("2d");
+        const ctx = canvas.getContext("2d", { willReadFrequently: false });
         if (!ctx) return;
 
         let animationFrameId: number;
 
         const render = () => {
             const index = Math.round(frameIndex.get());
+
+            // Skip the draw entirely if the frame hasn't changed — biggest perf win
+            if (index === lastDrawnFrameRef.current) {
+                animationFrameId = requestAnimationFrame(render);
+                return;
+            }
+
             const img = getNearestImage(index);
 
             if (img && img.complete && img.naturalWidth > 0) {
@@ -173,20 +193,37 @@ export default function ProductBottleScroll({ product }: ProductBottleScrollProp
 
                 let drawWidth, drawHeight, offsetX, offsetY;
 
-                if (imgAspect > canvasAspect) {
-                    drawWidth = rw;
-                    drawHeight = rw / imgAspect;
-                    offsetX = 0;
-                    offsetY = (rh - drawHeight) / 2;
+                // Use "cover" fitting on mobile (≤768px) so the image
+                // fills the viewport; use "contain" on desktop to letterbox.
+                const isMobile = rw <= 768;
+                const useCover = isMobile;
+
+                if (useCover) {
+                    // Cover: scale to fill, crop overflow (centered)
+                    if (imgAspect > canvasAspect) {
+                        drawHeight = rh;
+                        drawWidth = rh * imgAspect;
+                    } else {
+                        drawWidth = rw;
+                        drawHeight = rw / imgAspect;
+                    }
                 } else {
-                    drawHeight = rh;
-                    drawWidth = rh * imgAspect;
-                    offsetX = (rw - drawWidth) / 2;
-                    offsetY = 0;
+                    // Contain: scale to fit, letterbox (centered)
+                    if (imgAspect > canvasAspect) {
+                        drawWidth = rw;
+                        drawHeight = rw / imgAspect;
+                    } else {
+                        drawHeight = rh;
+                        drawWidth = rh * imgAspect;
+                    }
                 }
+
+                offsetX = (rw - drawWidth) / 2;
+                offsetY = (rh - drawHeight) / 2;
 
                 ctx.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
                 ctx.restore();
+                lastDrawnFrameRef.current = index;
             }
 
             animationFrameId = requestAnimationFrame(render);
@@ -247,7 +284,7 @@ export default function ProductBottleScroll({ product }: ProductBottleScrollProp
                 <canvas
                     ref={canvasRef}
                     className="w-full h-full object-contain"
-                    style={{ maxWidth: "100%", maxHeight: "100%" }}
+                    style={{ maxWidth: "100%", maxHeight: "100%", willChange: "transform" }}
                 />
             </div>
         </div>
